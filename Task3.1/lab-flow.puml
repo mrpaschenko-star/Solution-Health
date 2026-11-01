@@ -1,0 +1,57 @@
+@startuml lab-flow
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 14
+skinparam activityBackgroundColor #E7F2ED
+skinparam activityBorderColor #28614F
+skinparam ArrowColor #526579
+skinparam wrapWidth 250
+title Здоровье+ — от готового результата LIS до приложения
+
+start
+:Оборудование → LIS\nКонтроль файла, spool и повторный приём;
+note right
+  Нет результата в LIS — downstream
+  не может его придумать.
+  FTP заменяется/изолируется.
+end note
+:LIS публикует разрешённую final-версию\nНачало измерения end-to-end latency;
+:Adapter получает repeatable delta\nPush может ускорить; reconciliation страхует;
+if (Schema, версия и связь пациента корректны?) then (да)
+  :Одна транзакция\nPayload/reference + dedup + outbox + checkpoint;
+else (нет)
+  :Защищённый quarantine + alert\nДиапазон не объявляется успешно доставленным;
+  :Исправление источника/mapping\nи контролируемый replay;
+  stop
+endif
+:Outbox relay → RabbitMQ\nPersistent, mandatory, publisher confirm;
+note right
+  Нет confirm: outbox остаётся,
+  повтор с тем же business key.
+  Backpressure без drop-head.
+end note
+fork
+  :CRM queue / consumer\nConditional upsert resultId + version;
+  if (CRM durable result подтверждён?) then (да)
+    :ACK; врачи видят версию;
+  else (нет / unknown)
+    :Сверка и bounded retries\nЗатем parking + alert + replay;
+  endif
+fork again
+  :Patient read queue / consumer\nInbox + версия + projection + outbox\nв одной транзакции;
+  :ACK после commit\nДубликат не меняет итог;
+  fork
+    :ResultAvailable → уведомления\nНейтральный push без медицинских данных;
+  fork again
+    :Пациент открывает приложение\nНе обязан дождаться push;
+    :API проверяет сессию и ownership\nЧитает актуальную разрешённую версию;
+    :Результат виден пациенту\nМетрика ready-in-LIS → visible-in-API;
+  end fork
+end fork
+note right
+  Ветки выполняются независимо.
+  CRM и push не блокируют
+  чтение доступного результата.
+end note
+stop
+@enduml

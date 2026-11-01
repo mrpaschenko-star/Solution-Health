@@ -1,0 +1,58 @@
+@startuml to-be
+!pragma layout smetana
+!define RELATIVE_INCLUDE
+!include ../../Diagrams/vendor/C4-PlantUML/C4_Context.puml
+LAYOUT_TOP_DOWN()
+skinparam shadowing false
+skinparam dpi 110
+title Здоровье+ — целевой контекст интеграций (C4 Level 1)
+AddElementTag("new", $bgColor="#21695B", $borderColor="#184B42", $fontColor="#FFFFFF", $legendText="Новая система / граница ответственности")
+
+Person(patient, "Пациент", "Собственные записи, оплата, результаты")
+Person(staff, "Врач / администратор", "Расписание и медицинские данные по правам")
+Person(labstaff, "Лаборант", "Просмотр и контроль данных в LIS")
+System_Ext(mobile, "Мобильное приложение", "Новый программный актор; native client")
+System_Ext(psp, "Платёжный провайдер", "Списание, status, refund; hosted payment flow")
+System_Ext(equipment, "Лабораторное оборудование", "Автоматическая передача файлов")
+
+Enterprise_Boundary(company, "Здоровье+") {
+  System(platform, "Мобильная платформа", "Gateway / BFF; сохраняемая SAGA записи и платежей; корреляция и outbox", $tags="new")
+  System(iam, "IAM", "OIDC / PKCE, сессии, связывание subject с пациентом", $tags="new")
+  System(results, "Доставка и чтение результатов", "LIS adapter, durable journal, независимые CRM и patient consumers", $tags="new")
+  System(policy, "Шлюз ДМС", "Контракт 1С, проекция, общая квота и breaker", $tags="new")
+  System(schedule, "Расписание", "Java / REST / PostgreSQL; атомарные резервы и идемпотентные команды")
+  System(crm, "CRM", "Карточки пациентов, результаты для сотрудников; REST")
+  System(lis, "LIS", "SOAP / REST / FTP; источник версий анализов; резерв лаборатории требует нового контракта")
+  System(onec, "1С: Полисы", "Источник страхового покрытия; HTTP-шлюз")
+  System(portal, "Веб-портал", "Существующий интерфейс; команды переводятся на общую границу")
+  System(notify, "Уведомления", "RabbitMQ и внешние SMS/email/push providers; раздельные очереди")
+}
+
+Rel(patient, mobile, "Пользуется", "UI")
+Rel(mobile, iam, "Вход и обмен code", "HTTPS / OIDC + PKCE")
+Rel(mobile, platform, "Запросы / 202 / статус операции", "HTTPS REST + Bearer")
+Rel(platform, iam, "Сессия и identity", "HTTPS / JWKS + session check")
+Rel(platform, schedule, "Hold / confirm / release; свои записи", "REST, idempotent commands")
+Rel(platform, policy, "Проверка покрытия / pending", "HTTPS REST")
+Rel(policy, onec, "Общий limiter, bounded проверки и refresh", "HTTP через защищённый adapter")
+Rel(platform, psp, "Платёж / status / refund; callback обратно", "HTTPS REST / signed webhook")
+Rel(mobile, psp, "Оплата в provider flow", "HTTPS")
+Rel(platform, lis, "Резерв забора / confirm / release", "Adapter; capability gate")
+Rel(platform, crm, "Минимальная карточка и patient mapping", "HTTPS REST")
+Rel(platform, results, "Разрешённая версия результата", "HTTPS REST / ownership")
+Rel(lis, results, "Final / corrected / retracted версии", "Repeatable pull; push при поддержке")
+Rel(results, crm, "Versioned upsert независимо от patient read", "Durable queue + REST")
+Rel(platform, notify, "Запись подтверждена", "Outbox → AMQPS")
+Rel(results, notify, "Результат доступен в read-store", "Outbox → AMQPS")
+Rel(notify, patient, "Нейтральное уведомление", "Push / SMS / email, async")
+Rel(staff, portal, "Работает по роли", "HTTPS")
+Rel(portal, platform, "Общие команды записи / оплаты", "HTTPS; поэтапная миграция")
+Rel(portal, schedule, "Чтение / управление расписанием", "REST; owner invariants")
+Rel(portal, crm, "Данные по объектным правам", "REST")
+Rel(portal, policy, "Проверка ДМС вместо прямого вызова 1С", "HTTPS REST")
+Rel(labstaff, lis, "Только просмотр", "UI")
+Rel(equipment, lis, "Приём с контролем файлов и recovery", "Legacy FTP; защита/замена транспорта")
+
+SHOW_FLOATING_LEGEND()
+Lay_D(crm, LEGEND())
+@enduml

@@ -1,0 +1,32 @@
+@startuml policy-context
+!pragma layout smetana
+!define RELATIVE_INCLUDE
+!include ../../Diagrams/vendor/C4-PlantUML/C4_Context.puml
+LAYOUT_LEFT_RIGHT()
+skinparam shadowing false
+title Здоровье+ — разгрузка 1С (C4 Level 1)
+Person(patient, "Пациент", "Смотрит полис / записывается по ДМС")
+Person(admin, "Администратор", "Проверяет полис и разбирает pending")
+System_Ext(mobile, "Мобильная платформа", "Приложение, API, сохраняемый процесс записи")
+System_Ext(portal, "Веб-портал", "Перевод прямых вызовов на общий шлюз")
+System(policy, "Шлюз ДМС", "Adapter JSON/XML; display-проекция; single-flight; общая квота; breaker; refresh")
+System_Ext(onec, "1С: Полисы", "Источник страхового покрытия; HTTP-шлюз")
+Rel(patient, mobile, "Просмотр / запись", "HTTPS")
+Rel(admin, portal, "Операции по правам", "HTTPS")
+Rel(mobile, policy, "Cached display либо authoritative check", "HTTPS REST")
+Rel(portal, policy, "Общая граница вместо обхода квоты", "HTTPS REST")
+Rel(policy, onec, "Проверки и refresh; лимит всех попыток", "Защищённый HTTP adapter")
+Rel(onec, policy, "Ответ / версия; invalidation при поддержке", "Контрактный ответ / export")
+note bottom of policy
+  Стартовые параметры для испытаний:
+  общий бюджет 20 RPS, burst 5, concurrency 10;
+  display TTL 300 с, отрицательный display 30 с;
+  timeout 2 с, максимум 2 попытки.
+  Unknown / null / timeout не означают valid.
+end note
+note bottom of onec
+  Факт кейса: деградация >50 RPS, зависания >30 с.
+  Прямой legacy-трафик учитывается в общем бюджете.
+  Реплики шлюза не увеличивают мощность writer 1С.
+end note
+@enduml
