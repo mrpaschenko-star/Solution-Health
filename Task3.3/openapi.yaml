@@ -1,0 +1,268 @@
+openapi: 3.2.0
+info:
+  title: HealthPlus Patient Appointments API
+  version: 1.0.0
+  description: >-
+    Список записей только текущего подтверждённого пациента. Все адреса .example
+    демонстрационные. patientId не принимается от клиента. Версия OpenAPI 3.2.0
+    выбрана по тексту подзадачи 3.3; API major version — v1.
+servers:
+  - url: https://api.healthplus.example/api/v1
+    description: Демонстрационный адрес, не действующий production endpoint
+security:
+  - patientOAuth: [appointments:read]
+tags:
+  - name: Appointments
+    description: Собственные записи пациента
+paths:
+  /appointments:
+    get:
+      operationId: listMyAppointments
+      tags: [Appointments]
+      summary: Получить записи текущего пациента
+      description: >-
+        Subject access token сопоставляется с подтверждённой карточкой пациента
+        на сервере. Требуются действующая сессия и scope appointments:read.
+        upcoming означает confirmed с startsAt не ранее серверного времени
+        начала чтения. Незавершённая SAGA и временный hold сюда не входят.
+        Сортировка startsAt ASC, id ASC; сравнение времени по UTC.
+        Offset pagination не обеспечивает snapshot между HTTP-запросами.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: upcoming — предстоящие подтверждённые записи; другие значения — конечные состояния
+          schema:
+            type: string
+            enum: [upcoming, cancelled, completed]
+            default: upcoming
+          example: upcoming
+        - name: limit
+          in: query
+          required: false
+          description: Максимум записей на странице
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          example: 20
+        - name: offset
+          in: query
+          required: false
+          description: Количество пропускаемых записей после фильтрации и сортировки
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10000
+            default: 0
+          example: 0
+      responses:
+        '200':
+          description: Страница собственных записей; отсутствие записей — пустой items
+          headers:
+            Cache-Control:
+              description: Персональные ответы не сохраняются общими кешами
+              schema: {type: string, const: no-store}
+              example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentPage'
+              examples:
+                upcoming:
+                  summary: Одна предстоящая подтверждённая запись
+                  value:
+                    items:
+                      - id: 41c55fc2-7eb3-4b66-b954-c28d13bc55d2
+                        status: confirmed
+                        startsAt: '2026-11-03T10:00:00+03:00'
+                        endsAt: '2026-11-03T10:30:00+03:00'
+                        timeZone: Europe/Moscow
+                        doctor:
+                          id: 3815c23e-652b-4b20-a072-19c48021b724
+                          displayName: Врач демонстрационного примера
+                          specialty: Терапевт
+                        clinic:
+                          id: 63a77dc3-2a0b-4740-b5b3-392860e9cbbb
+                          displayName: Демонстрационная клиника
+                          city: Москва
+                    pagination:
+                      limit: 20
+                      offset: 0
+                      hasMore: false
+                      nextOffset: null
+                    generatedAt: '2026-10-31T09:00:00Z'
+                empty:
+                  summary: Нет предстоящих записей
+                  value:
+                    items: []
+                    pagination: {limit: 20, offset: 0, hasMore: false, nextOffset: null}
+                    generatedAt: '2026-10-31T09:00:00Z'
+        '400':
+          description: Некорректные status, limit или offset
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+              example:
+                type: https://api.healthplus.example/problems/invalid-parameter
+                title: Некорректный параметр
+                status: 400
+                detail: limit должен быть целым числом от 1 до 100.
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+        '401':
+          description: Нет действительного access token или сессия отозвана
+          headers:
+            WWW-Authenticate:
+              description: Bearer challenge; не раскрывает credential
+              schema: {type: string}
+              example: 'Bearer realm="patient-api", error="invalid_token"'
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+              example:
+                type: https://api.healthplus.example/problems/unauthorized
+                title: Требуется аутентификация
+                status: 401
+                detail: Войдите в приложение повторно.
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+        '403':
+          description: Недостаточно scope либо нет подтверждённой связи с собственной карточкой
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+              example:
+                type: https://api.healthplus.example/problems/forbidden
+                title: Доступ не разрешён
+                status: 403
+                detail: Для доступа требуется подтверждённая карточка пациента и разрешение на чтение.
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+        '429':
+          description: Превышен лимит чтения для subject; стартово 60 запросов в минуту, burst 10
+          headers:
+            Retry-After:
+              description: Секунды до следующей разрешённой попытки
+              schema: {type: integer, minimum: 1}
+              example: 2
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+              example:
+                type: https://api.healthplus.example/problems/rate-limit
+                title: Слишком много запросов
+                status: 429
+                detail: Повторите запрос после интервала Retry-After.
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+        '500':
+          description: Непредвиденная внутренняя ошибка; не возвращает частичный список как успешный
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+              example:
+                type: https://api.healthplus.example/problems/internal-error
+                title: Внутренняя ошибка
+                status: 500
+                detail: Не удалось получить записи. Сообщите поддержке идентификатор traceId.
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+        '503':
+          description: Зависимость или проверка сессии временно недоступна; отсутствие данных не маскируется пустым списком
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+              example:
+                type: https://api.healthplus.example/problems/unavailable
+                title: Сервис временно недоступен
+                status: 503
+                detail: Попробуйте получить записи позже.
+                traceId: 4bf92f3577b34da6a3ce929d0e0e4736
+components:
+  securitySchemes:
+    patientOAuth:
+      type: oauth2
+      description: >-
+        Access token в Authorization Bearer; OIDC login через системный браузер,
+        Authorization Code + PKCE S256. Native client без client secret.
+        ID token не принимается API. Все IAM URLs демонстрационные.
+      x-pkce-required: true
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.healthplus.example/oauth2/authorize
+          tokenUrl: https://auth.healthplus.example/oauth2/token
+          scopes:
+            appointments:read: Чтение собственных записей пациента
+  schemas:
+    AppointmentPage:
+      type: object
+      required: [items, pagination, generatedAt]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/Appointment'}
+        pagination:
+          $ref: '#/components/schemas/OffsetPagination'
+        generatedAt:
+          type: string
+          format: date-time
+          description: Серверное время начала чтения текущей страницы, не snapshot token
+    Appointment:
+      type: object
+      required: [id, status, startsAt, endsAt, timeZone, doctor, clinic]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Непрозрачный публичный идентификатор записи, не credential
+        status:
+          type: string
+          enum: [confirmed, cancelled, completed]
+        startsAt:
+          type: string
+          format: date-time
+          description: Начало приёма с UTC offset
+        endsAt:
+          type: string
+          format: date-time
+          description: Окончание, строго после startsAt
+        timeZone:
+          type: string
+          description: IANA time zone клиники для корректного отображения между городами
+          examples: [Europe/Moscow, Asia/Yekaterinburg, Asia/Novosibirsk]
+        doctor:
+          type: object
+          required: [id, displayName, specialty]
+          properties:
+            id: {type: string, format: uuid}
+            displayName: {type: string, minLength: 1}
+            specialty: {type: string, minLength: 1}
+        clinic:
+          type: object
+          required: [id, displayName, city]
+          properties:
+            id: {type: string, format: uuid}
+            displayName: {type: string, minLength: 1}
+            city: {type: string, minLength: 1}
+    OffsetPagination:
+      type: object
+      required: [limit, offset, hasMore, nextOffset]
+      properties:
+        limit: {type: integer, minimum: 1, maximum: 100}
+        offset: {type: integer, minimum: 0, maximum: 10000}
+        hasMore: {type: boolean}
+        nextOffset:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 10000
+          description: offset + число items при наличии разрешённой следующей страницы; иначе null
+    Problem:
+      type: object
+      required: [type, title, status, detail, traceId]
+      description: RFC 9457; без stack trace, токенов и медицинских подробностей
+      properties:
+        type: {type: string, format: uri}
+        title: {type: string, minLength: 1}
+        status: {type: integer, minimum: 400, maximum: 599}
+        detail: {type: string, minLength: 1}
+        traceId:
+          type: string
+          pattern: '^[0-9a-f]{32}$'

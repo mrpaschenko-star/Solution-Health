@@ -1,0 +1,56 @@
+@startuml booking-sequence
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+skinparam sequenceMessageAlign center
+skinparam maxMessageSize 160
+skinparam ParticipantPadding 15
+title Здоровье+ — успешная SAGA консультации, оплаты и лабораторного резерва
+autonumber
+actor Пациент as Patient
+participant "Мобильное\nприложение" as App
+participant "API Gateway\nи patient API" as API
+participant "SAGA worker\n+ durable state/outbox" as Saga
+participant Расписание as Schedule
+participant "Шлюз ДМС\n→ 1С" as Policy
+participant "Платёжный модуль\n+ ledger/inbox" as Pay
+participant PSP
+participant "LIS booking\nadapter" as Lab
+participant Уведомления as Notify
+
+Patient -> App: Выбрать приём и анализы
+App -> API: POST booking-operations\nBearer + Idempotency-Key
+API -> Saga: Транзакция: operation + dedup + outbox
+Saga --> API: operationId, durable accepted
+API --> App: 202 + Location операции
+Saga -> Schedule: hold(slot, operation step key)
+Schedule --> Saga: reservationId + version + expiry
+Saga -> Policy: Покрытие patient/service/clinic/date
+Policy --> Saga: Подтверждённое решение + reference
+note over Saga, Policy: Ветка с ДМС. Unknown не valid; без ДМС шаг не нужен.
+Saga -> Pay: createPayment(operationId, server quote)
+Pay -> PSP: Create session с устойчивым ключом
+PSP --> Pay: paymentId, actionUrl
+Pay --> Saga: PAYMENT_PENDING + actionUrl
+App -> API: GET operation
+API --> App: PAYMENT_PENDING, actionUrl
+App -> PSP: Открыть hosted payment flow
+Patient -> PSP: Подтвердить оплату
+PSP -> Pay: Подписанный callback: captured
+Pay -> Pay: Проверить подпись, сумму, reference\nInbox + paid + outbox
+Pay --> Saga: Подтверждённый PAID (durable event)
+note over Pay, PSP: Redirect не доказывает оплату. Потеря callback закрывается status query.
+Saga -> Lab: reserveCollectionSlot(step key)
+Lab --> Saga: labReservationId + expiry
+note over Saga, Lab: Capability reserve/confirm/release требуется подтвердить до запуска.
+Saga -> Lab: confirm(labReservationId, version)
+Lab --> Saga: Confirmed
+Saga -> Schedule: confirm(reservationId, version)
+Schedule --> Saga: appointmentId, confirmed
+Saga -> Saga: Транзакция: CONFIRMED + notification outbox
+Saga ->> Notify: BookingConfirmed через RabbitMQ
+App -> API: GET operation / appointments
+API --> App: CONFIRMED и собственная запись
+Notify ->> Patient: Нейтральное подтверждение (async)
+note over Saga, Notify: Сбой push не откатывает запись. Compensations и unknown-outcome ветки — в booking-saga.md.
+@enduml

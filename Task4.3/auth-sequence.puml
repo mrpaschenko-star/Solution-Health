@@ -1,0 +1,35 @@
+@startuml auth-sequence
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 14
+skinparam maxMessageSize 190
+title Здоровье+ — OIDC Authorization Code + PKCE и доступ к своим данным
+autonumber
+actor Пациент as User
+participant "Native app\npublic client" as App
+participant "Системный\nбраузер" as Browser
+participant "IAM / OIDC" as IAM
+participant "API Gateway" as GW
+participant "Patient API\n+ ownership" as API
+
+App -> App: Создать verifier, S256 challenge, state, nonce
+App -> Browser: /authorize + challenge + state + nonce\nregistered redirect URI
+Browser -> IAM: Аутентификация и согласие
+User -> IAM: Подтвердить вход
+IAM --> Browser: Redirect с authorization code + state
+Browser --> App: Проверенный App Link / callback
+App -> App: Проверить state
+App -> IAM: /token: code + verifier + redirect URI\nбез client secret
+IAM --> App: Access token + ID token + rotating refresh token
+App -> App: Проверить ID token / nonce\nСохранить токены в Keychain/Keystore
+App -> GW: GET /api/v1/appointments\nAuthorization: Bearer access token
+GW -> GW: signature, iss, aud, exp/nbf, scope\nrate limit; ID token не принимается
+GW -> API: Запрос с проверенной identity\nзащищённый сервисный канал
+API -> IAM: Проверить актуальность сессии\nдля доступа к медицинским данным
+IAM --> API: Active session
+API -> API: Subject → подтверждённый patient\nФильтр/права на каждый объект
+API --> GW: Только собственные записи\nCache-Control: no-store
+GW --> App: 200 JSON
+note over IAM, API: Нельзя подтвердить сессию/права — закрыть доступ; IAM требует HA.
+note over App, GW: Tokens не помещаются в URL, push или логи. Refresh reuse отзывает family.
+@enduml
